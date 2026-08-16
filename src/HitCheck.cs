@@ -20,6 +20,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Win32;
 
 static class HitCheck
 {
@@ -40,6 +41,22 @@ static class HitCheck
     [DllImport("advapi32.dll", SetLastError = true)]
     static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES nw, uint len, IntPtr prev, IntPtr ret);
 
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    static extern IntPtr OpenSCManager(string machineName, string databaseName, uint desiredAccess);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    static extern IntPtr OpenService(IntPtr scm, string serviceName, uint desiredAccess);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern bool QueryServiceStatusEx(IntPtr hService, int infoLevel, IntPtr buffer, uint bufSize, out uint bytesNeeded);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern bool CloseServiceHandle(IntPtr h);
+
+    [DllImport("ntdll.dll")]
+    static extern IntPtr RtlCreateQueryDebugBuffer(uint size, bool eventPair);
+    [DllImport("ntdll.dll")]
+    static extern int RtlQueryProcessDebugInformation(int pid, uint debugInfoClassMask, IntPtr debugBuffer);
+    [DllImport("ntdll.dll")]
+    static extern int RtlDestroyQueryDebugBuffer(IntPtr debugBuffer);
+
     [StructLayout(LayoutKind.Sequential)]
     struct MEMORY_BASIC_INFORMATION
     {
@@ -58,6 +75,20 @@ static class HitCheck
     [StructLayout(LayoutKind.Sequential)]
     struct TOKEN_PRIVILEGES { public uint Count; public LUID Luid; public uint Attributes; }
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct SERVICE_STATUS_PROCESS
+    {
+        public uint dwServiceType;
+        public uint dwCurrentState;
+        public uint dwControlsAccepted;
+        public uint dwWin32ExitCode;
+        public uint dwServiceSpecificExitCode;
+        public uint dwCheckPoint;
+        public uint dwWaitHint;
+        public uint dwProcessId;
+        public uint dwServiceFlags;
+    }
+
     const uint PROCESS_QUERY_INFORMATION = 0x0400;
     const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
     const uint PROCESS_VM_READ = 0x0010;
@@ -71,7 +102,6 @@ static class HitCheck
     const uint TOKEN_QUERY = 0x0008;
     const uint SE_PRIVILEGE_ENABLED = 0x0002;
 
-
     const int MIN_LEN = 4;
     const int MAX_STR = 4096;
     const int CHUNK = 8 * 1024 * 1024;
@@ -79,15 +109,11 @@ static class HitCheck
     const long MAX_PER_PROC = 6L * 1024 * 1024 * 1024;
     const int MAX_EXAMPLES = 8;
 
-
     static readonly string[] DefaultTargets = {
         "explorer", "javaw", "java",
         "chrome", "msedge", "firefox", "opera", "opera_gx", "browser",
         "brave", "vivaldi", "yandex", "iexplore"
     };
-
-
-
 
     static readonly string[] BrowserNames = {
         "chrome", "msedge", "firefox", "opera", "opera_gx",
@@ -96,21 +122,17 @@ static class HitCheck
 
     static readonly object ResultLock = new object();
 
-
     static readonly string[] CheatHostDomains = {
-        "vape.gg", "everlack.in", "doomsdayclient.com", "cortexclient.com",
-        "nemezida.ru", "dreampoolhack.ru", "akrien.wtf", "takker.ru", "ammit.cc",
+        "vape.gg", "everlack.in", "neverlack.in", "doomsdayclient.com", "cortexclient.com",
+        "nemezida.ru", "nemezida.cc", "dreampoolhack.ru", "akrien.wtf", "takker.ru", "ammit.cc",
         "stubborn.website", "meteorclient.com", "liquidbounce.net", "aristois.net",
         "wurstclient.net", "novoline.ru", "expensive.lol", "moon.vin", "rise.ovh"
     };
 
     static readonly string[] CheatUrlPatterns = {
-        "vk.com/avaloneclient", "vk.com/norender", "vk.com/troxill"
+        "vk.com/avaloneclient", "vk.com/norender", "vk.com/troxill", "vk.com/ammitclient",
+        "cortexclient.com/account", "doomsdayclient.com/loader"
     };
-
-
-
-
 
     class Sig { public string Cat, Label, Conf, Mode; public Sig(string c, string l, string k, string m){Cat=c;Label=l;Conf=k;Mode=m;} }
     static readonly Dictionary<string, Sig> SigLookup = new Dictionary<string, Sig>(StringComparer.OrdinalIgnoreCase);
@@ -118,19 +140,15 @@ static class HitCheck
 
     static void BuildSignatures()
     {
-
         var defs = new[] {
-        
-            new[]{"ASM:",                          "SIG","ASM marker (ClownClient/DEADCODE/self-written)","MED","PFX"},
-            new[]{"net.minecraftforge.ASMEventHandler","SIG","Forge ASM event handler hook","MED","ANY"},
             new[]{"(Ljava/lang/Class<*>;Ljava/lang/String;Ljava/lang/Object;)V","SIG","Self-written cheat signature","HIGH","ANY"},
-        
+
             new[]{"killaura",                      "SIG","KillAura module","HIGH","ANY"},
             new[]{"invisiblehitbox",               "SIG","InvisibleHitbox module","HIGH","ANY"},
             new[]{"triggerbot",                    "SIG","TriggerBot module","HIGH","ANY"},
             new[]{"aimassist",                     "SIG","AimAssist module","HIGH","ANY"},
             new[]{"autoclicker",                   "SIG","AutoClicker module","MED","ANY"},
-        
+
             new[]{"vape4dll",                      "SIG","VapeClient V4","HIGH","ANY"},
             new[]{"faketapemouse",                 "SIG","FakeTapeMouse (hitbox+trigger)","HIGH","ANY"},
             new[]{".tapemouse",                    "SIG","FakeTapeMouse namespace","HIGH","ANY"},
@@ -149,7 +167,7 @@ static class HitCheck
             new[]{"celestial",                     "SIG","Celestial","HIGH","CTX"},
             new[]{"tenacity",                      "SIG","Tenacity","HIGH","CTX"},
             new[]{"huzuni",                        "SIG","Huzuni","HIGH","ANY"},
-        
+
             new[]{"bushroot",                      "SIG","bushroot [hitbox]","HIGH","CTX"},
             new[]{"clowdy",                        "SIG","ClowdyClient","HIGH","CTX"},
             new[]{"derick1337",                    "SIG","Derick1337 [hitbox]","HIGH","ANY"},
@@ -160,6 +178,7 @@ static class HitCheck
             new[]{"walvbt#",                       "SIG","Walvbt# [AnanaV2]","HIGH","ANY"},
             new[]{"swqxnv",                        "SIG","SWqxNv [doomsday]","HIGH","ANY"},
             new[]{"onikoasp",                      "SIG","oNIkoasP [doomsday]","HIGH","ANY"},
+            new[]{"yiqdgferojr",                   "SIG","yIQDgFEROJr [doomsday]","HIGH","ANY"},
             new[]{"reach:",                        "SIG","reach: [vert client]","MED","PFX"},
             new[]{"hitbox:",                       "SIG","hitbox: [vert client]","MED","PFX"},
             new[]{"az85",                          "SIG","Az85 [AnanaV4]","LOW","EXACT"},
@@ -167,19 +186,31 @@ static class HitCheck
             new[]{"#hit",                          "SIG","#Hit [AnanaV2]","LOW","EXACT"},
             new[]{"chs/main",                      "SIG","chs/main [Vertzah]","MED","CTX"},
             new[]{"pastebin",                      "SIG","pastebin [NoRender Lite]","LOW","CTX"},
-        
+
+            // Cortex Lite strings from manual
+            new[]{"xEnzy",                         "SIG","xEnzy [Cortex Lite]","HIGH","ANY"},
+            new[]{"(O9XD",                         "SIG","(O9XD [Cortex Lite]","HIGH","ANY"},
+            new[]{"~WIr",                          "SIG","~WIr [Cortex Lite]","HIGH","ANY"},
+            new[]{"{7K[c",                         "SIG","{7K[c [Cortex Lite]","HIGH","ANY"},
+            new[]{"]A[XAY",                        "SIG","]A[XAY [Cortex Lite]","HIGH","ANY"},
+
+            // Sites from manual
             new[]{"cortexclient.com",              "SITE","cortexclient.com","HIGH","ANY"},
             new[]{"vk.com/avaloneclient",          "SITE","vk.com/avaloneclient","HIGH","ANY"},
             new[]{"vk.com/norender",               "SITE","vk.com/norender","HIGH","ANY"},
             new[]{"vk.com/troxill",                "SITE","vk.com/troxill","HIGH","ANY"},
+            new[]{"vk.com/ammitclient",            "SITE","vk.com/ammitclient","HIGH","ANY"},
             new[]{"doomsdayclient.com",            "SITE","doomsdayclient.com","HIGH","ANY"},
             new[]{"ammit.cc",                      "SITE","ammit.cc","HIGH","ANY"},
             new[]{"takker.ru",                     "SITE","takker.ru","HIGH","ANY"},
             new[]{"akrien.wtf",                    "SITE","akrien.wtf","HIGH","ANY"},
             new[]{"dreampoolhack.ru",              "SITE","dreampoolhack.ru","HIGH","ANY"},
             new[]{"everlack.in",                   "SITE","everlack.in","HIGH","ANY"},
+            new[]{"neverlack.in",                  "SITE","neverlack.in","HIGH","ANY"},
+            new[]{"meteorclient.com",              "SITE","meteorclient.com","HIGH","ANY"},
             new[]{"vape.gg",                       "SITE","vape.gg","HIGH","ANY"},
             new[]{"nemezida.ru",                   "SITE","nemezida.ru","HIGH","ANY"},
+            new[]{"nemezida.cc",                   "SITE","nemezida.cc","HIGH","ANY"},
         };
 
         var patterns = new List<string>();
@@ -197,42 +228,41 @@ static class HitCheck
             if (i > 0) sb.Append('|');
             string esc = Regex.Escape(patterns[i]);
 
-
-            if (patterns[i].Equals("aimassist", StringComparison.OrdinalIgnoreCase))
-                esc = "(?<![a-z])" + esc;
+            if (patterns[i].Equals("aimassist", StringComparison.OrdinalIgnoreCase) ||
+                patterns[i].Equals("triggerbot", StringComparison.OrdinalIgnoreCase) ||
+                patterns[i].Equals("killaura", StringComparison.OrdinalIgnoreCase) ||
+                patterns[i].Equals("autoclicker", StringComparison.OrdinalIgnoreCase) ||
+                patterns[i].Equals("invisiblehitbox", StringComparison.OrdinalIgnoreCase))
+            {
+                esc = @"(?<![a-zA-Z0-9_])" + esc + @"(?![a-zA-Z0-9_])";
+            }
             sb.Append(esc);
         }
         SigRegex = new Regex(sb.ToString(), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
     }
-
 
     static readonly Regex FileRegex = new Regex(
         @"file:\/\/\/?(?<u>[A-Za-z]:[\\/][^\s""'<>|\r\n*?]*?\.(?:jar|rar|exe|zip|dll|js|bat|cmd|ps1|msi|vbs))(?![A-Za-z0-9])" +
         @"|(?<p>[A-Za-z]:\\[^\s""'<>|\r\n*?]*?\.(?:jar|rar|exe|zip|dll|js|bat|cmd|ps1|msi|vbs))(?![A-Za-z0-9])",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-
-
-
     static readonly Regex FileNameKeyword = new Regex(
-        @"vapeclient|vapev\d|vape_|nemezida|norender|liquidbounce|wurstclient|" +
+        @"(?:vapeclient|vapev\d|vape_|nemezida|norender|liquidbounce|wurstclient|" +
         @"aristois|novoline|exhibition|deadcode|clownclient|clowdy|augustus|" +
-        @"akrien|dreampool|everlack|troxil|ammit|huzuni|doomsdayclient|" +
-        @"killaura|aimbot|aimassist|autoclick|triggerbot|injector|cheatengine|" +
-        @"\bcheat|\bhack\b|bypass|nursultan|jigsawclient|\bexpensive\b",
+        @"akrien|dreampool|everlack|neverlack|troxill?|ammit|huzuni|doomsday|" +
+        @"killaura|aimbot|aimassist|autoclick|triggerbot|faketapemouse|injector|cheatengine|" +
+        @"dauntiblyat|renamemeplease|123\.dll|vec\.dll|osuautorender|editme\.dll|lb3\.dll|" +
+        @"cleanerdps|bushroot|nursultan|jigsawclient|\bexpensive\b|\bfluegel\b|" +
+        @"(?<!anti[-_]?)(?:cheat|hack)(?!er\b))",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    static readonly Regex DisplayTextRegex = new Regex(
+        @"\{""displayText"":""(?<name>[^""]+?\.(?:exe|jar|dll))""",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    static readonly string[] HotDirs = {
-        @"\downloads\", @"\desktop\", @"\temp\", @"\appdata\local\temp\",
-        @".minecraft\mods\", @"\onedrive\downloads\", @"\onedrive\desktop\"
-    };
-
-    static readonly string[] HotExts = { ".jar", ".rar", ".zip", ".7z" };
-
-
-    static readonly string[] DeletedExts = { ".jar", ".rar", ".zip", ".7z", ".exe", ".dll", ".js", ".bat", ".cmd", ".ps1" };
-
+    static readonly Regex DpsRecordRegex = new Regex(
+        @"!(?:!(?<name>[^! \r\n\t]+?\.(?:exe|jar|dll))!(?<date>\d{4}/\d{2}/\d{2}:\d{2}:\d{2}:\d{2})!0!|(?<name>[^! \r\n\t]+?\.(?:exe|jar|dll))!\d{4}/\d{2}/\d{2}:\d{2}:\d{2}:\d{2}!)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     static readonly string[] SystemDirs = {
         @"\windows\", @"\program files\", @"\program files (x86)\", @"\programdata\microsoft\",
@@ -241,11 +271,13 @@ static class HitCheck
         @"\.gradle\", @"\gradle\caches\", @"\.m2\", @"\.ivy2\", @"\.nuget\", @"\node_modules\"
     };
 
-
     class Finding { public string Cat, Label, Conf; public int Count; public HashSet<string> Procs = new HashSet<string>(); public List<string> Examples = new List<string>(); }
     class FileHit { public string Dir, Name, Reason, BinPath; public int DelMin = -1; public HashSet<string> Procs = new HashSet<string>(); }
+    class ServiceAudit { public string Name, DisplayName, Status; public int Pid; public bool Suspicious; }
+
     static readonly Dictionary<string, Finding> Sigs = new Dictionary<string, Finding>();
     static readonly Dictionary<string, FileHit> Files = new Dictionary<string, FileHit>(StringComparer.OrdinalIgnoreCase);
+    static readonly List<ServiceAudit> ServicesReport = new List<ServiceAudit>();
     static DateTime Started;
 
     static void AddSig(Sig s, string context, string proc)
@@ -303,10 +335,6 @@ static class HitCheck
         return sb.ToString().Trim();
     }
 
-
-
-
-
     static bool HasCheatContext(string low)
     {
         return low.IndexOf(".jar", StringComparison.Ordinal) >= 0
@@ -324,12 +352,26 @@ static class HitCheck
             || s.StartsWith("file:", StringComparison.OrdinalIgnoreCase);
     }
 
+    static bool IsAnticheatOrTool(string low)
+    {
+        return low.Contains("anticheat") || low.Contains("anti-cheat") || low.Contains("grimac") ||
+               low.Contains("vulcan") || low.Contains("processhacker") || low.Contains("systeminformer");
+    }
+
+    static bool IsAnticheatFalsePositive(string s)
+    {
+        string low = s.ToLowerInvariant();
+        if (Regex.IsMatch(s, @"\b7\s+(?:KillAura|Velocity|HitBox|TriggerBot|Reach|AimAssist)\b", RegexOptions.IgnoreCase))
+            return true;
+        if (Regex.IsMatch(s, @"\bAG\s*\((?:KillAura|Velocity|HitBox|TriggerBot|Reach|AimAssist)\)", RegexOptions.IgnoreCase))
+            return true;
+        if (low.Contains("anticheat") || low.Contains("anti-cheat") || low.Contains("grimac") ||
+            low.Contains("vulcan") || low.Contains("matrix anticheat") || low.Contains("karhu"))
+            return true;
+        return false;
+    }
+
     static void ScanString(string s, string proc) { ScanString(s, proc, false); }
-
-
-
-
-
 
     static void ScanString(string s, string proc, bool history)
     {
@@ -338,6 +380,39 @@ static class HitCheck
         else if (proc.StartsWith("java", StringComparison.OrdinalIgnoreCase))
             MatchSignatures(s, proc);
 
+        // Check explorer.exe displayText launch artifacts (Theme 8.1)
+        if (proc.IndexOf("explorer", StringComparison.OrdinalIgnoreCase) >= 0 && s.IndexOf("displayText", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            foreach (Match m in DisplayTextRegex.Matches(s))
+            {
+                string fn = m.Groups["name"].Value;
+                if (FileNameKeyword.IsMatch(fn) && !IsAnticheatOrTool(fn.ToLowerInvariant()))
+                {
+                    AddSig(new Sig("EXPLORER", "Suspicious execution entry in explorer: " + fn, "HIGH", "ANY"), fn, proc);
+                }
+            }
+        }
+
+        // Check DPS records in svchost / services (Theme 9.4)
+        if (s.IndexOf("!0!", StringComparison.Ordinal) >= 0 || s.IndexOf("cleanerdps", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            foreach (Match m in DpsRecordRegex.Matches(s))
+            {
+                string fn = m.Groups["name"].Value;
+                string dt = m.Groups["date"].Value;
+                if (!string.IsNullOrEmpty(fn))
+                {
+                    string low = fn.ToLowerInvariant();
+                    if (!IsAnticheatOrTool(low))
+                    {
+                        if (low.Contains("cleanerdps"))
+                            AddSig(new Sig("DPS", "DPS cleaner utility trace detected: " + fn, "HIGH", "ANY"), fn + " (" + dt + ")", proc);
+                        else if (FileNameKeyword.IsMatch(fn))
+                            AddSig(new Sig("DPS", "Cheat execution recorded in DPS: " + fn, "HIGH", "ANY"), fn + " (" + dt + ")", proc);
+                    }
+                }
+            }
+        }
 
         if (s.IndexOf("file:", StringComparison.OrdinalIgnoreCase) >= 0 ||
             s.IndexOf(":\\", StringComparison.Ordinal) >= 0)
@@ -352,17 +427,46 @@ static class HitCheck
 
     static void MatchSignatures(string s, string proc)
     {
-        if (!SigRegex.IsMatch(s)) return;
+        if (IsAnticheatFalsePositive(s)) return;
+        if (s.IndexOf("[*.]", StringComparison.Ordinal) >= 0) return;
+
         string low = null;
+
+        // Specialized ASM check for ClownClient / DEADCODE / TapeMouse / Cheats (Themes 8.3, 8.4, 8.6)
+        if (s.StartsWith("ASM:", StringComparison.OrdinalIgnoreCase))
+        {
+            string after = s.Substring(4).Trim();
+            if (after.Length == 0)
+            {
+                if (s.Length >= 100)
+                    AddSig(new Sig("SIG", "ClownClient (empty ASM result > 100)", "HIGH", "ANY"), s, proc);
+                else if (s.Length == 10)
+                    AddSig(new Sig("SIG", "DEADCODE (empty ASM result = 10)", "HIGH", "ANY"), s, proc);
+            }
+            else
+            {
+                if (low == null) low = s.ToLowerInvariant();
+                if (low.Contains("extension") && low.Contains("tapemouse"))
+                    AddSig(new Sig("SIG", "FakeTapeMouse (ASM Extension hook)", "HIGH", "ANY"), s, proc);
+                else if (low.Contains("killaura") || low.Contains("aura"))
+                    AddSig(new Sig("SIG", "ASM hook w/ KillAura", "HIGH", "ANY"), s, proc);
+                else if (low.Contains("hitbox"))
+                    AddSig(new Sig("SIG", "ASM hook w/ HitBox", "HIGH", "ANY"), s, proc);
+                else if (low.Contains("trigger"))
+                    AddSig(new Sig("SIG", "ASM hook w/ TriggerBot", "HIGH", "ANY"), s, proc);
+                else if (low.Contains("reach"))
+                    AddSig(new Sig("SIG", "ASM hook w/ Reach", "HIGH", "ANY"), s, proc);
+                else if (low.Contains("axisalignedbb") || low.Contains("setplayer"))
+                    AddSig(new Sig("SIG", "ASM hook modifying player bounding box", "HIGH", "ANY"), s, proc);
+            }
+        }
+
+        if (!SigRegex.IsMatch(s)) return;
+
         foreach (Match m in SigRegex.Matches(s))
         {
             Sig sig;
             if (!SigLookup.TryGetValue(m.Value, out sig)) continue;
-
-
-            if (s.IndexOf("[*.]", StringComparison.Ordinal) >= 0) continue;
-
-
 
             if (sig.Cat == "SIG" && LooksLikeFilePath(s)) continue;
             if (sig.Mode == "PFX")
@@ -379,22 +483,6 @@ static class HitCheck
                 if (!HasCheatContext(low)) continue;
             }
             AddSig(sig, s, proc);
-
-
-
-
-
-            if (m.Value.Equals("ASM:", StringComparison.OrdinalIgnoreCase))
-            {
-                if (low == null) low = s.ToLowerInvariant();
-                string mark = null;
-                if (low.IndexOf("extension", StringComparison.Ordinal) >= 0) mark = "Extension (FakeTapeMouse-style hitbox)";
-                else if (low.IndexOf("killaura", StringComparison.Ordinal) >= 0 || low.IndexOf("aura", StringComparison.Ordinal) >= 0) mark = "aura module";
-                else if (low.IndexOf("hitbox", StringComparison.Ordinal) >= 0) mark = "hitbox module";
-                else if (low.IndexOf("trigger", StringComparison.Ordinal) >= 0) mark = "trigger module";
-                else if (low.IndexOf("reach", StringComparison.Ordinal) >= 0) mark = "reach module";
-                if (mark != null) AddSig(new Sig("SIG", "ASM hook w/ " + mark, "HIGH", "ANY"), s, proc);
-            }
         }
     }
 
@@ -407,9 +495,6 @@ static class HitCheck
         return -1;
     }
 
-
-
-
     static void MatchHistoryUrls(string s, string proc)
     {
         int idx = 0;
@@ -418,7 +503,6 @@ static class HitCheck
             int p = s.IndexOf("://", idx, StringComparison.Ordinal);
             if (p < 0) break;
             idx = p + 3;
-
 
             int schemeStart;
             if (p >= 5 && string.Compare(s, p - 5, "https", 0, 5, true, System.Globalization.CultureInfo.InvariantCulture) == 0) schemeStart = p - 5;
@@ -441,8 +525,6 @@ static class HitCheck
             {
                 if (host == d || host.EndsWith("." + d, StringComparison.Ordinal))
                 {
-
-
                     int urlEnd = hostEnd;
                     while (urlEnd < s.Length && s[urlEnd] > 0x20 && s[urlEnd] != '"' && s[urlEnd] != '\'' &&
                            s[urlEnd] != '<' && s[urlEnd] != '>' && s[urlEnd] != '?') urlEnd++;
@@ -467,19 +549,15 @@ static class HitCheck
         while (path.Contains("\\\\")) path = path.Replace("\\\\", "\\");
         string low = path.ToLowerInvariant();
 
+        foreach (var d in SystemDirs) if (low.Contains(d)) return;
+
+        if (IsAnticheatOrTool(low)) return;
+
+        // Only flag if file name contains a known cheat keyword or DLL name
         bool nameHit = FileNameKeyword.IsMatch(path);
-        bool inSystem = false; foreach (var d in SystemDirs) if (low.Contains(d)) { inSystem = true; break; }
-        bool inHot = false;    foreach (var d in HotDirs)    if (low.Contains(d)) { inHot = true; break; }
-        bool hotExt = false;   foreach (var e in HotExts)    if (low.EndsWith(e)) { hotExt = true; break; }
+        if (!nameHit) return;
 
-        string reason;
-        if (nameHit) reason = "cheat keyword in name";
-        else if (inSystem) return;
-        else if (inHot && hotExt) reason = "archive/jar in download/desktop/temp";
-        else return;
-
-
-
+        string reason = "cheat keyword in file name";
 
         bool exists;
         try { exists = File.Exists(path); } catch { exists = false; }
@@ -492,7 +570,6 @@ static class HitCheck
 
     static void ExtractAndScan(byte[] buf, int len, string proc, bool history)
     {
-
         int start = -1;
         for (int i = 0; i < len; i++)
         {
@@ -502,7 +579,6 @@ static class HitCheck
             else { if (start >= 0) { int n = i - start; if (n >= MIN_LEN) ScanString(Encoding.ASCII.GetString(buf, start, Math.Min(n, MAX_STR)), proc, history); start = -1; } }
         }
         if (start >= 0) { int n = len - start; if (n >= MIN_LEN) ScanString(Encoding.ASCII.GetString(buf, start, Math.Min(n, MAX_STR)), proc, history); }
-
 
         start = -1;
         for (int i = 0; i + 1 < len; i += 2)
@@ -529,7 +605,6 @@ static class HitCheck
         long scanned = 0;
         try
         {
-
             var work = new List<long[]>();
             long planned = 0;
             int mbiSize = Marshal.SizeOf(typeof(MEMORY_BASIC_INFORMATION));
@@ -563,8 +638,6 @@ static class HitCheck
                 if (planned > MAX_PER_PROC) break;
             }
 
-
-
             var po = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(2, Environment.ProcessorCount) };
             Parallel.ForEach(work, po,
                 () => new byte[CHUNK],
@@ -585,6 +658,240 @@ static class HitCheck
         return scanned;
     }
 
+    // Theme 8.2: Module analysis in javaw.exe
+    static void ScanProcessModules(Process p)
+    {
+        try
+        {
+            var modules = p.Modules;
+            foreach (ProcessModule mod in modules)
+            {
+                string name = mod.ModuleName;
+                string path = "";
+                try { path = mod.FileName; } catch { }
+                string low = path.ToLowerInvariant();
+                long size = mod.ModuleMemorySize;
+
+                // Suspicious hitbox sizes: 1.42 MB, 1.43 MB, 1.56 MB, 1.89 MB
+                bool suspiciousWeight = (size >= 1480000 && size <= 1515000) ||
+                                       (size >= 1625000 && size <= 1655000) ||
+                                       (size >= 1970000 && size <= 2000000);
+
+                string desc = "";
+                try { desc = mod.FileVersionInfo.FileDescription ?? ""; } catch { }
+                bool emptyDesc = string.IsNullOrEmpty(desc.Trim());
+
+                bool knownCheatDll = FileNameKeyword.IsMatch(name);
+                bool suspLocation = low.Contains(@"\downloads\") || low.Contains(@"\temp\") ||
+                                    low.Contains(@"\desktop\") || low.Contains(@"\appdata\local\temp\");
+
+                if (knownCheatDll)
+                {
+                    AddSig(new Sig("DLL", "Known cheat DLL loaded: " + name, "HIGH", "ANY"), path + " (" + (size / 1024) + " KB)", p.ProcessName);
+                }
+                else if (suspiciousWeight && emptyDesc)
+                {
+                    AddSig(new Sig("DLL", "Suspicious hitbox DLL weight (" + (size / (1024.0 * 1024.0)).ToString("0.00") + " MB, empty desc): " + name, "HIGH", "ANY"), path, p.ProcessName);
+                }
+                else if (suspiciousWeight && suspLocation)
+                {
+                    AddSig(new Sig("DLL", "Suspicious DLL weight in temp/downloads: " + name + " (" + (size / (1024.0 * 1024.0)).ToString("0.00") + " MB)", "HIGH", "ANY"), path, p.ProcessName);
+                }
+            }
+        }
+        catch { }
+    }
+
+    // Theme 8.2: Unloaded modules inspection in javaw.exe
+    static void ScanUnloadedModules(int pid, string procName)
+    {
+        try
+        {
+            IntPtr dbg = RtlCreateQueryDebugBuffer(0, false);
+            if (dbg == IntPtr.Zero) return;
+            try
+            {
+                int st = RtlQueryProcessDebugInformation(pid, 0x04 /* RTL_QUERY_PROCESS_UNLOADED_MODULES */, dbg);
+                if (st >= 0)
+                {
+                    IntPtr unl = Marshal.ReadIntPtr(dbg, 112);
+                    if (unl != IntPtr.Zero)
+                    {
+                        uint count = (uint)Marshal.ReadInt32(unl, 0);
+                        for (int i = 0; i < count && i < 1000; i++)
+                        {
+                            IntPtr entry = new IntPtr(unl.ToInt64() + 8 + i * 32);
+                            long modSize = Marshal.ReadInt64(entry, 8);
+                            short strLen = Marshal.ReadInt16(entry, 24);
+                            IntPtr strBuf = Marshal.ReadIntPtr(entry, 32);
+                            string modName = "";
+                            if (strBuf != IntPtr.Zero && strLen > 0)
+                            {
+                                byte[] nameBytes = new byte[strLen];
+                                Marshal.Copy(strBuf, nameBytes, 0, strLen);
+                                modName = Encoding.Unicode.GetString(nameBytes);
+                            }
+
+                            bool suspWeight = (modSize >= 1480000 && modSize <= 1515000) ||
+                                             (modSize >= 1625000 && modSize <= 1655000) ||
+                                             (modSize >= 1970000 && modSize <= 2000000);
+                            bool cheatName = !string.IsNullOrEmpty(modName) && FileNameKeyword.IsMatch(modName);
+
+                            if (cheatName)
+                            {
+                                AddSig(new Sig("DLL", "Unloaded cheat module detected: " + modName, "HIGH", "ANY"), "Size: " + (modSize / 1024) + " KB", procName);
+                            }
+                            else if (suspWeight)
+                            {
+                                AddSig(new Sig("DLL", "Unloaded module with hitbox weight (" + (modSize / (1024.0 * 1024.0)).ToString("0.00") + " MB): " + (string.IsNullOrEmpty(modName) ? "unknown" : modName), "HIGH", "ANY"), "Unloaded module", procName);
+                            }
+                        }
+                    }
+                }
+            }
+            finally { RtlDestroyQueryDebugBuffer(dbg); }
+        }
+        catch { }
+    }
+
+    // Theme 8: Check OpenSavePidlMRU for recent injector file dialogs
+    static void ScanComDlgMRU()
+    {
+        try
+        {
+            using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSavePidlMRU"))
+            {
+                if (key == null) return;
+                foreach (var sub in key.GetSubKeyNames())
+                {
+                    using (var subKey = key.OpenSubKey(sub))
+                    {
+                        if (subKey == null) continue;
+                        foreach (var valName in subKey.GetValueNames())
+                        {
+                            if (valName.Equals("MRUListEx", StringComparison.OrdinalIgnoreCase)) continue;
+                            byte[] raw = subKey.GetValue(valName) as byte[];
+                            if (raw == null || raw.Length < 4) continue;
+                            string str = Encoding.Unicode.GetString(raw);
+                            int nullIdx = str.IndexOf('\0');
+                            if (nullIdx > 0) str = str.Substring(0, nullIdx);
+
+                            foreach (Match m in Regex.Matches(str, @"[A-Za-z0-9_\-\. ]+\.(?:dll|jar|exe|zip|rar)", RegexOptions.IgnoreCase))
+                            {
+                                string fn = m.Value;
+                                if (FileNameKeyword.IsMatch(fn) && !IsAnticheatOrTool(fn.ToLowerInvariant()))
+                                {
+                                    AddSig(new Sig("MRU", "Cheat file in Open/Save dialog MRU: " + fn, "HIGH", "ANY"), fn + @" (ComDlg32\" + sub + ")", "Registry");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+    }
+
+    // Theme 9: Windows Services Audit
+    static int GetServiceProcessId(string serviceName)
+    {
+        IntPtr scm = OpenSCManager(null, null, 0x0001);
+        if (scm == IntPtr.Zero) return 0;
+        try
+        {
+            IntPtr svc = OpenService(scm, serviceName, 0x0004);
+            if (svc == IntPtr.Zero) return 0;
+            try
+            {
+                int size = Marshal.SizeOf(typeof(SERVICE_STATUS_PROCESS));
+                IntPtr buf = Marshal.AllocHGlobal(size);
+                try
+                {
+                    uint needed;
+                    if (QueryServiceStatusEx(svc, 0, buf, (uint)size, out needed))
+                    {
+                        var ssp = (SERVICE_STATUS_PROCESS)Marshal.PtrToStructure(buf, typeof(SERVICE_STATUS_PROCESS));
+                        return (int)ssp.dwProcessId;
+                    }
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+            }
+            finally { CloseServiceHandle(svc); }
+        }
+        finally { CloseServiceHandle(scm); }
+        return 0;
+    }
+
+    static string GetServiceStatus(string serviceName)
+    {
+        IntPtr scm = OpenSCManager(null, null, 0x0001);
+        if (scm == IntPtr.Zero) return "ACCESS_DENIED";
+        try
+        {
+            IntPtr svc = OpenService(scm, serviceName, 0x0004);
+            if (svc == IntPtr.Zero)
+            {
+                int err = Marshal.GetLastWin32Error();
+                return err == 1060 ? "NOT_INSTALLED" : "ERROR_" + err;
+            }
+            try
+            {
+                int size = Marshal.SizeOf(typeof(SERVICE_STATUS_PROCESS));
+                IntPtr buf = Marshal.AllocHGlobal(size);
+                try
+                {
+                    uint needed;
+                    if (QueryServiceStatusEx(svc, 0, buf, (uint)size, out needed))
+                    {
+                        var ssp = (SERVICE_STATUS_PROCESS)Marshal.PtrToStructure(buf, typeof(SERVICE_STATUS_PROCESS));
+                        switch (ssp.dwCurrentState)
+                        {
+                            case 4: return "RUNNING (PID " + ssp.dwProcessId + ")";
+                            case 1: return "STOPPED";
+                            case 2: return "START_PENDING";
+                            case 3: return "STOP_PENDING";
+                            case 7: return "PAUSED";
+                            default: return "STATE_" + ssp.dwCurrentState;
+                        }
+                    }
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+            }
+            finally { CloseServiceHandle(svc); }
+        }
+        finally { CloseServiceHandle(scm); }
+        return "UNKNOWN";
+    }
+
+    static void AuditServices()
+    {
+        var monitored = new[] {
+            new[] { "PcaSvc", "Program Compatibility Assistant" },
+            new[] { "DPS", "Diagnostic Policy Service" },
+            new[] { "SysMain", "Superfetch / SysMain" },
+            new[] { "bam", "Background Activity Moderator" },
+            new[] { "EventLog", "Windows Event Log" },
+            new[] { "DiagTrack", "Connected User Experiences and Telemetry" },
+            new[] { "BFE", "Base Filtering Engine" },
+            new[] { "DcomLaunch", "DCOM Server Process Launcher" }
+        };
+
+        foreach (var svc in monitored)
+        {
+            string name = svc[0];
+            string display = svc[1];
+            int pid = GetServiceProcessId(name);
+            string status = GetServiceStatus(name);
+
+            bool isStopped = status.StartsWith("STOPPED") || status.StartsWith("NOT_INSTALLED");
+            if (isStopped && name != "bam")
+            {
+                AddSig(new Sig("SERVICE", "Critical monitoring service disabled/stopped: " + name + " (" + display + ")", "MED", "ANY"), "Status: " + status, "ServiceManager");
+            }
+
+            ServicesReport.Add(new ServiceAudit { Name = name, DisplayName = display, Status = status, Pid = pid, Suspicious = isStopped });
+        }
+    }
 
     static void EnableDebugPrivilege()
     {
@@ -599,10 +906,6 @@ static class HitCheck
         }
         finally { CloseHandle(token); }
     }
-
-
-
-
 
     class RbRec { public string Path; public DateTime Deleted; }
 
@@ -660,9 +963,8 @@ static class HitCheck
                     if (rec.Deleted < lo || rec.Deleted > hi) continue;
 
                     string low = rec.Path.ToLowerInvariant();
-                    bool susp = FileNameKeyword.IsMatch(rec.Path);
-                    if (!susp) foreach (var e in DeletedExts) if (low.EndsWith(e)) { susp = true; break; }
-                    if (!susp) continue;
+                    if (IsAnticheatOrTool(low)) continue;
+                    if (!FileNameKeyword.IsMatch(rec.Path)) continue;
 
                     int mins = (int)Math.Max(0, Math.Round((DateTime.Now - rec.Deleted).TotalMinutes));
                     string binR = null;
@@ -670,9 +972,7 @@ static class HitCheck
                         string name = Path.GetFileName(meta);
                         if (name.StartsWith("$I")) binR = Path.Combine(sidDir, "$R" + name.Substring(2));
                     } catch { }
-                    string why = FileNameKeyword.IsMatch(rec.Path)
-                        ? "recently deleted, cheat keyword in name"
-                        : "recently deleted archive/executable";
+                    string why = "recently deleted cheat file";
                     AddDeleted(rec.Path, why, mins, binR);
                     found++;
                 }
@@ -685,12 +985,6 @@ static class HitCheck
     {
         return Array.IndexOf(BrowserNames, procName.ToLowerInvariant()) >= 0;
     }
-
-
-
-
-
-
 
     static List<string[]> FindHistoryDbs()
     {
@@ -745,6 +1039,129 @@ static class HitCheck
         return res;
     }
 
+    // ── SQLite helpers ──────────────────────────────────────────────────
+    static long SqliteVarInt(byte[] d, ref int p)
+    {
+        long v = 0;
+        for (int i = 0; i < 9; i++)
+        {
+            if (p >= d.Length) break;
+            byte b = d[p++];
+            if (i == 8) { v = (v << 8) | b; break; }
+            v = (v << 7) | (long)(b & 0x7F);
+            if ((b & 0x80) == 0) break;
+        }
+        return v;
+    }
+
+    static int SqliteSerialLen(long st)
+    {
+        if (st <= 0) return 0;
+        if (st == 1) return 1;
+        if (st == 2) return 2;
+        if (st == 3) return 3;
+        if (st == 4) return 4;
+        if (st == 5) return 6;
+        if (st == 6 || st == 7) return 8;
+        if (st == 8 || st == 9) return 0;
+        if (st >= 12) return (int)((st - (st % 2 == 0 ? 12 : 13)) / 2);
+        return 0;
+    }
+
+    /// <summary>
+    /// Parse SQLite leaf table B-tree pages and extract URLs from actual cell records.
+    /// This skips freed/deleted pages, avoiding false positives from residual data.
+    /// </summary>
+    static List<string> ExtractSqliteUrls(byte[] data)
+    {
+        var urls = new List<string>();
+        if (data.Length < 100) return urls;
+
+        // Verify SQLite magic
+        if (data[0] != 0x53 || data[1] != 0x51 || data[2] != 0x4C) return urls;
+
+        // Read page size from header (bytes 16-17, big-endian)
+        int pageSize = (data[16] << 8) | data[17];
+        if (pageSize == 1) pageSize = 65536;
+        if (pageSize < 512 || pageSize > 65536) return urls;
+
+        int totalPages = data.Length / pageSize;
+
+        for (int pg = 0; pg < totalPages; pg++)
+        {
+            int pageOff = pg * pageSize;
+            // Page 1 (pg==0) has the 100-byte file header before the page header
+            int hdrOff = (pg == 0) ? 100 : pageOff;
+            if (hdrOff + 8 > data.Length) break;
+
+            byte pageType = data[hdrOff];
+            if (pageType != 0x0D) continue; // only leaf table b-tree pages
+
+            int cellCount = (data[hdrOff + 3] << 8) | data[hdrOff + 4];
+            int ptrBase = hdrOff + 8;
+
+            for (int c = 0; c < cellCount; c++)
+            {
+                int pp = ptrBase + c * 2;
+                if (pp + 2 > data.Length) break;
+                int cellOff = pageOff + ((data[pp] << 8) | data[pp + 1]);
+                if (cellOff < pageOff || cellOff >= pageOff + pageSize) continue;
+                if (cellOff >= data.Length) continue;
+
+                try
+                {
+                    int pos = cellOff;
+                    long payloadLen = SqliteVarInt(data, ref pos);
+                    if (payloadLen <= 0 || payloadLen > pageSize) continue;
+                    long rowId = SqliteVarInt(data, ref pos);
+
+                    int recHdrStart = pos;
+                    long hdrLen = SqliteVarInt(data, ref pos);
+                    if (hdrLen <= 0 || hdrLen > payloadLen) continue;
+                    int recHdrEnd = recHdrStart + (int)hdrLen;
+                    if (recHdrEnd > data.Length) continue;
+
+                    // Collect serial types
+                    var stypes = new List<long>();
+                    while (pos < recHdrEnd && pos < data.Length)
+                        stypes.Add(SqliteVarInt(data, ref pos));
+
+                    // Walk values; extract text fields that look like URLs
+                    int vpos = recHdrEnd;
+                    foreach (long st in stypes)
+                    {
+                        int len = SqliteSerialLen(st);
+                        if (st >= 13 && (st % 2 == 1) && len > 10) // text field
+                        {
+                            if (vpos + len <= data.Length)
+                            {
+                                // Quick prefix check before allocating a string
+                                bool looksLikeUrl = false;
+                                if (vpos + 8 <= data.Length)
+                                {
+                                    char c0 = (char)data[vpos];
+                                    if ((c0 == 'h' || c0 == 'H') &&
+                                        (data[vpos + 1] == (byte)'t' || data[vpos + 1] == (byte)'T') &&
+                                        (data[vpos + 2] == (byte)'t' || data[vpos + 2] == (byte)'T') &&
+                                        (data[vpos + 3] == (byte)'p' || data[vpos + 3] == (byte)'P'))
+                                        looksLikeUrl = true;
+                                }
+                                if (looksLikeUrl)
+                                {
+                                    string text = Encoding.UTF8.GetString(data, vpos, len);
+                                    urls.Add(text);
+                                }
+                            }
+                        }
+                        vpos += len;
+                    }
+                }
+                catch { /* corrupted cell — skip */ }
+            }
+        }
+        return urls;
+    }
+
     static long ScanHistoryFile(string label, string path)
     {
         byte[] data;
@@ -768,7 +1185,12 @@ static class HitCheck
             }
             catch { return -1; }
         }
-        ExtractAndScan(data, data.Length, label, true);
+
+        // Parse SQLite structure — read only active leaf table cells
+        var historyUrls = ExtractSqliteUrls(data);
+        foreach (var url in historyUrls)
+            ScanString(url, label, true);
+
         return data.Length;
     }
 
@@ -785,7 +1207,6 @@ static class HitCheck
             else       Console.WriteLine((n / (1024 * 1024)) + " MB");
         }
     }
-
 
     static int Main(string[] args)
     {
@@ -810,19 +1231,32 @@ static class HitCheck
         BuildSignatures();
         EnableDebugPrivilege();
 
+        // 1. Audit Windows Services (Theme 9)
+        Console.WriteLine("\nAuditing Windows Services (PcaSvc, DPS, SysMain, bam, EventLog, DiagTrack)...");
+        try { AuditServices(); } catch (Exception e) { Console.WriteLine("  Services audit error: " + e.Message); }
+        foreach (var s in ServicesReport)
+        {
+            string flag = s.Suspicious ? "[!] " : "    ";
+            Console.WriteLine("  " + flag + s.Name.PadRight(12) + " (" + s.DisplayName + "): " + s.Status);
+        }
 
+        // 2. Check OpenSave MRU Dialogs in Registry (Theme 8)
+        try { ScanComDlgMRU(); } catch { }
+
+        // 3. Enumerate processes
         var targets = new List<Process>();
         Process[] running;
         try { running = Process.GetProcesses(); }
         catch (Exception e) { Console.WriteLine("Cannot enumerate processes: " + e.Message); return 2; }
 
+        var targetPids = new HashSet<int>();
+
         foreach (var pr in running)
         {
             string name = pr.ProcessName.ToLowerInvariant();
-            bool take;
+            bool take = false;
             if (explicitTargets.Count > 0)
             {
-                take = false;
                 foreach (var t in explicitTargets)
                 {
                     int pid;
@@ -833,12 +1267,25 @@ static class HitCheck
             else if (all) take = pr.Id != Process.GetCurrentProcess().Id;
             else take = Array.IndexOf(DefaultTargets, name) >= 0;
 
-            if (take) targets.Add(pr);
+            if (take && targetPids.Add(pr.Id)) targets.Add(pr);
         }
 
-
-
-
+        // Add service processes (BFE, DPS, DcomLaunch, SearchIndexer) to scan targets
+        if (explicitTargets.Count == 0 && !listOnly)
+        {
+            foreach (var svc in ServicesReport)
+            {
+                if (svc.Pid > 0 && targetPids.Add(svc.Pid))
+                {
+                    try { targets.Add(Process.GetProcessById(svc.Pid)); } catch { }
+                }
+            }
+            foreach (var pr in running)
+            {
+                if (pr.ProcessName.Equals("SearchIndexer", StringComparison.OrdinalIgnoreCase) && targetPids.Add(pr.Id))
+                    targets.Add(pr);
+            }
+        }
 
         int droppedBrowsers = 0;
         if (explicitTargets.Count == 0 && !all && !deep)
@@ -856,7 +1303,7 @@ static class HitCheck
         foreach (var pr in targets)
             Console.WriteLine("  - " + pr.ProcessName + ".exe  (pid " + pr.Id + ")");
         if (droppedBrowsers > 0)
-            Console.WriteLine("  (browser checked via history, not memory; use --deep to also scan browser memory)");
+            Console.WriteLine("  (browser memory excluded; use --deep to include live browser processes)");
 
         if (listOnly)
         {
@@ -867,14 +1314,24 @@ static class HitCheck
             return 0;
         }
 
+        // 4. Module & Memory Scan
         long total = 0;
         var sw = Stopwatch.StartNew();
         if (targets.Count > 0)
         {
-            Console.WriteLine("\nScanning memory across " + Environment.ProcessorCount + " CPU cores...");
+            Console.WriteLine("\nAnalyzing modules & scanning memory across " + Environment.ProcessorCount + " CPU cores...");
             foreach (var pr in targets)
             {
-                Console.Write("  " + pr.ProcessName + ".exe (pid " + pr.Id + ") ... ");
+                // Module analysis for Java processes (Theme 8.2)
+                if (pr.ProcessName.StartsWith("java", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.Write("  " + pr.ProcessName + ".exe (pid " + pr.Id + ") modules... ");
+                    ScanProcessModules(pr);
+                    ScanUnloadedModules(pr.Id, pr.ProcessName);
+                    Console.WriteLine("ok");
+                }
+
+                Console.Write("  " + pr.ProcessName + ".exe (pid " + pr.Id + ") memory... ");
                 long n = 0;
                 var psw = Stopwatch.StartNew();
                 try { n = ScanProcess(pr); } catch (Exception e) { Console.Write("error: " + e.Message + " "); }
@@ -884,12 +1341,14 @@ static class HitCheck
             }
         }
 
+        // 5. Browser History (on-disk)
         Console.WriteLine("\nScanning browser history (visited sites, on-disk)...");
         try { ScanBrowserHistories(); } catch (Exception e) { Console.WriteLine("  error: " + e.Message); }
 
         sw.Stop();
         Console.WriteLine("\nDone in " + sw.Elapsed.TotalSeconds.ToString("0.0") + "s (" + (total / (1024 * 1024)) + " MB of process memory).");
 
+        // 6. Recycle Bin
         Console.Write("Checking Recycle Bin for files deleted in the last 30 min... ");
         int del = 0;
         try { del = ScanRecycleBin(30); } catch (Exception e) { Console.Write("error: " + e.Message); }
@@ -910,9 +1369,8 @@ static class HitCheck
         Console.WriteLine("HitCheck - Automated threat detection and forensics tool");
         Console.WriteLine();
         Console.WriteLine("Usage: HitCheck.exe [options] [name.exe | pid ...]");
-        Console.WriteLine("  (no args)   memory-scan explorer + javaw/java (parallel), and read");
-        Console.WriteLine("              visited cheat sites from the browsers' on-disk history");
-        Console.WriteLine("  --deep      ALSO scan live browser process memory (slower, noisier)");
+        Console.WriteLine("  (no args)   memory-scan explorer, javaw/java, target services, and on-disk browser history");
+        Console.WriteLine("  --deep      ALSO scan live browser process memory (slower)");
         Console.WriteLine("  --all       scan every process the tool can open");
         Console.WriteLine("  --list      list target processes + history files, do not read memory");
         Console.WriteLine("  --help      show this help");
@@ -920,7 +1378,6 @@ static class HitCheck
         Console.WriteLine("Run as Administrator for best coverage. Output is written to console");
         Console.WriteLine("and to hitcheck_report_<timestamp>.txt next to the exe.");
     }
-
 
     static void Report()
     {
@@ -932,14 +1389,22 @@ static class HitCheck
         W("  RESULTS");
         W("========================================================");
 
+        // Windows Services section
+        W("");
+        W("[ WINDOWS SERVICES AUDIT ] (" + ServicesReport.Count + ")");
+        foreach (var s in ServicesReport)
+        {
+            string flag = s.Suspicious ? "  !! " : "     ";
+            W(flag + s.Name.PadRight(12) + " (" + s.DisplayName + "): " + s.Status);
+        }
 
+        // Suspicious Files section
         W("");
         W("[ SUSPICIOUS FILES ] (" + Files.Count + ")");
         if (Files.Count == 0) W("  none found");
         else
         {
             var list = new List<FileHit>(Files.Values);
-
             list.Sort((a, b) =>
             {
                 bool da = a.DelMin >= 0, db = b.DelMin >= 0;
@@ -964,7 +1429,6 @@ static class HitCheck
             }
         }
 
-
         var sites = new List<Finding>();
         var cheats = new List<Finding>();
         foreach (var f in Sigs.Values) { if (f.Cat == "SITE") sites.Add(f); else cheats.Add(f); }
@@ -978,16 +1442,14 @@ static class HitCheck
             foreach (var ex in f.Examples) W("        > " + ex);
         }
 
-
         W("");
-        W("[ CHEAT SIGNATURES ] (" + cheats.Count + ")");
+        W("[ CHEAT SIGNATURES & TRACES ] (" + cheats.Count + ")");
         if (cheats.Count == 0) W("  none found");
         else foreach (var f in Sort(cheats))
         {
             W("  [" + f.Conf + "] " + f.Label + "   (x" + f.Count + ", in: " + string.Join(", ", new List<string>(f.Procs).ToArray()) + ")");
             foreach (var ex in f.Examples) W("        > " + ex);
         }
-
 
         W("");
         W("========================================================");
