@@ -15,12 +15,19 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32;
+
+[assembly: AssemblyTitle("HitCheck")]
+[assembly: AssemblyDescription("Automated Threat Detection and Forensics Tool")]
+[assembly: AssemblyProduct("HitCheck")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
 
 static class HitCheck
 {
@@ -1047,8 +1054,8 @@ static class HitCheck
         {
             if (p >= d.Length) break;
             byte b = d[p++];
-            if (i == 8) { v = (v << 8) | b; break; }
-            v = (v << 7) | (long)(b & 0x7F);
+            if (i == 8) { v = (v << 8) | (uint)b; break; }
+            v = (v << 7) | (uint)(b & 0x7F);
             if ((b & 0x80) == 0) break;
         }
         return v;
@@ -1224,7 +1231,7 @@ static class HitCheck
         }
 
         Console.WriteLine("========================================================");
-        Console.WriteLine("  HitCheck  -  system threat detection tool");
+        Console.WriteLine("  HitCheck v1.0.0  -  system threat detection tool");
         Console.WriteLine("  " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "   (read-only memory scan)");
         Console.WriteLine("========================================================");
 
@@ -1366,7 +1373,7 @@ static class HitCheck
 
     static void PrintHelp()
     {
-        Console.WriteLine("HitCheck - Automated threat detection and forensics tool");
+        Console.WriteLine("HitCheck v1.0.0 - Automated threat detection and forensics tool");
         Console.WriteLine();
         Console.WriteLine("Usage: HitCheck.exe [options] [name.exe | pid ...]");
         Console.WriteLine("  (no args)   memory-scan explorer, javaw/java, target services, and on-disk browser history");
