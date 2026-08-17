@@ -194,14 +194,12 @@ static class HitCheck
             new[]{"chs/main",                      "SIG","chs/main [Vertzah]","MED","CTX"},
             new[]{"pastebin",                      "SIG","pastebin [NoRender Lite]","LOW","CTX"},
 
-            // Cortex Lite strings from manual
             new[]{"xEnzy",                         "SIG","xEnzy [Cortex Lite]","HIGH","ANY"},
             new[]{"(O9XD",                         "SIG","(O9XD [Cortex Lite]","HIGH","ANY"},
             new[]{"~WIr",                          "SIG","~WIr [Cortex Lite]","HIGH","ANY"},
             new[]{"{7K[c",                         "SIG","{7K[c [Cortex Lite]","HIGH","ANY"},
             new[]{"]A[XAY",                        "SIG","]A[XAY [Cortex Lite]","HIGH","ANY"},
 
-            // Sites from manual
             new[]{"cortexclient.com",              "SITE","cortexclient.com","HIGH","ANY"},
             new[]{"vk.com/avaloneclient",          "SITE","vk.com/avaloneclient","HIGH","ANY"},
             new[]{"vk.com/norender",               "SITE","vk.com/norender","HIGH","ANY"},
@@ -387,7 +385,6 @@ static class HitCheck
         else if (proc.StartsWith("java", StringComparison.OrdinalIgnoreCase))
             MatchSignatures(s, proc);
 
-        // Check explorer.exe displayText launch artifacts (Theme 8.1)
         if (proc.IndexOf("explorer", StringComparison.OrdinalIgnoreCase) >= 0 && s.IndexOf("displayText", StringComparison.OrdinalIgnoreCase) >= 0)
         {
             foreach (Match m in DisplayTextRegex.Matches(s))
@@ -400,7 +397,6 @@ static class HitCheck
             }
         }
 
-        // Check DPS records in svchost / services (Theme 9.4)
         if (s.IndexOf("!0!", StringComparison.Ordinal) >= 0 || s.IndexOf("cleanerdps", StringComparison.OrdinalIgnoreCase) >= 0)
         {
             foreach (Match m in DpsRecordRegex.Matches(s))
@@ -439,7 +435,6 @@ static class HitCheck
 
         string low = null;
 
-        // Specialized ASM check for ClownClient / DEADCODE / TapeMouse / Cheats (Themes 8.3, 8.4, 8.6)
         if (s.StartsWith("ASM:", StringComparison.OrdinalIgnoreCase))
         {
             string after = s.Substring(4).Trim();
@@ -560,7 +555,6 @@ static class HitCheck
 
         if (IsAnticheatOrTool(low)) return;
 
-        // Only flag if file name contains a known cheat keyword or DLL name
         bool nameHit = FileNameKeyword.IsMatch(path);
         if (!nameHit) return;
 
@@ -665,7 +659,6 @@ static class HitCheck
         return scanned;
     }
 
-    // Theme 8.2: Module analysis in javaw.exe
     static void ScanProcessModules(Process p)
     {
         try
@@ -679,7 +672,7 @@ static class HitCheck
                 string low = path.ToLowerInvariant();
                 long size = mod.ModuleMemorySize;
 
-                // Suspicious hitbox sizes: 1.42 MB, 1.43 MB, 1.56 MB, 1.89 MB
+            
                 bool suspiciousWeight = (size >= 1480000 && size <= 1515000) ||
                                        (size >= 1625000 && size <= 1655000) ||
                                        (size >= 1970000 && size <= 2000000);
@@ -709,7 +702,7 @@ static class HitCheck
         catch { }
     }
 
-    // Theme 8.2: Unloaded modules inspection in javaw.exe
+    
     static void ScanUnloadedModules(int pid, string procName)
     {
         try
@@ -761,7 +754,6 @@ static class HitCheck
         catch { }
     }
 
-    // Theme 8: Check OpenSavePidlMRU for recent injector file dialogs
     static void ScanComDlgMRU()
     {
         try
@@ -799,7 +791,7 @@ static class HitCheck
         catch { }
     }
 
-    // Theme 9: Windows Services Audit
+    
     static int GetServiceProcessId(string serviceName)
     {
         IntPtr scm = OpenSCManager(null, null, 0x0001);
@@ -1046,7 +1038,6 @@ static class HitCheck
         return res;
     }
 
-    // ── SQLite helpers ──────────────────────────────────────────────────
     static long SqliteVarInt(byte[] d, ref int p)
     {
         long v = 0;
@@ -1075,19 +1066,13 @@ static class HitCheck
         return 0;
     }
 
-    /// <summary>
-    /// Parse SQLite leaf table B-tree pages and extract URLs from actual cell records.
-    /// This skips freed/deleted pages, avoiding false positives from residual data.
-    /// </summary>
     static List<string> ExtractSqliteUrls(byte[] data)
     {
         var urls = new List<string>();
         if (data.Length < 100) return urls;
 
-        // Verify SQLite magic
         if (data[0] != 0x53 || data[1] != 0x51 || data[2] != 0x4C) return urls;
 
-        // Read page size from header (bytes 16-17, big-endian)
         int pageSize = (data[16] << 8) | data[17];
         if (pageSize == 1) pageSize = 65536;
         if (pageSize < 512 || pageSize > 65536) return urls;
@@ -1097,7 +1082,7 @@ static class HitCheck
         for (int pg = 0; pg < totalPages; pg++)
         {
             int pageOff = pg * pageSize;
-            // Page 1 (pg==0) has the 100-byte file header before the page header
+  
             int hdrOff = (pg == 0) ? 100 : pageOff;
             if (hdrOff + 8 > data.Length) break;
 
@@ -1128,12 +1113,12 @@ static class HitCheck
                     int recHdrEnd = recHdrStart + (int)hdrLen;
                     if (recHdrEnd > data.Length) continue;
 
-                    // Collect serial types
+        
                     var stypes = new List<long>();
                     while (pos < recHdrEnd && pos < data.Length)
                         stypes.Add(SqliteVarInt(data, ref pos));
 
-                    // Walk values; extract text fields that look like URLs
+           
                     int vpos = recHdrEnd;
                     foreach (long st in stypes)
                     {
@@ -1142,7 +1127,7 @@ static class HitCheck
                         {
                             if (vpos + len <= data.Length)
                             {
-                                // Quick prefix check before allocating a string
+                             
                                 bool looksLikeUrl = false;
                                 if (vpos + 8 <= data.Length)
                                 {
@@ -1193,7 +1178,6 @@ static class HitCheck
             catch { return -1; }
         }
 
-        // Parse SQLite structure — read only active leaf table cells
         var historyUrls = ExtractSqliteUrls(data);
         foreach (var url in historyUrls)
             ScanString(url, label, true);
@@ -1238,7 +1222,7 @@ static class HitCheck
         BuildSignatures();
         EnableDebugPrivilege();
 
-        // 1. Audit Windows Services (Theme 9)
+    
         Console.WriteLine("\nAuditing Windows Services (PcaSvc, DPS, SysMain, bam, EventLog, DiagTrack)...");
         try { AuditServices(); } catch (Exception e) { Console.WriteLine("  Services audit error: " + e.Message); }
         foreach (var s in ServicesReport)
@@ -1247,10 +1231,10 @@ static class HitCheck
             Console.WriteLine("  " + flag + s.Name.PadRight(12) + " (" + s.DisplayName + "): " + s.Status);
         }
 
-        // 2. Check OpenSave MRU Dialogs in Registry (Theme 8)
+        
         try { ScanComDlgMRU(); } catch { }
 
-        // 3. Enumerate processes
+        
         var targets = new List<Process>();
         Process[] running;
         try { running = Process.GetProcesses(); }
@@ -1277,7 +1261,7 @@ static class HitCheck
             if (take && targetPids.Add(pr.Id)) targets.Add(pr);
         }
 
-        // Add service processes (BFE, DPS, DcomLaunch, SearchIndexer) to scan targets
+        
         if (explicitTargets.Count == 0 && !listOnly)
         {
             foreach (var svc in ServicesReport)
@@ -1321,7 +1305,7 @@ static class HitCheck
             return 0;
         }
 
-        // 4. Module & Memory Scan
+        
         long total = 0;
         var sw = Stopwatch.StartNew();
         if (targets.Count > 0)
@@ -1329,7 +1313,7 @@ static class HitCheck
             Console.WriteLine("\nAnalyzing modules & scanning memory across " + Environment.ProcessorCount + " CPU cores...");
             foreach (var pr in targets)
             {
-                // Module analysis for Java processes (Theme 8.2)
+                
                 if (pr.ProcessName.StartsWith("java", StringComparison.OrdinalIgnoreCase))
                 {
                     Console.Write("  " + pr.ProcessName + ".exe (pid " + pr.Id + ") modules... ");
@@ -1348,14 +1332,14 @@ static class HitCheck
             }
         }
 
-        // 5. Browser History (on-disk)
+        
         Console.WriteLine("\nScanning browser history (visited sites, on-disk)...");
         try { ScanBrowserHistories(); } catch (Exception e) { Console.WriteLine("  error: " + e.Message); }
 
         sw.Stop();
         Console.WriteLine("\nDone in " + sw.Elapsed.TotalSeconds.ToString("0.0") + "s (" + (total / (1024 * 1024)) + " MB of process memory).");
 
-        // 6. Recycle Bin
+        
         Console.Write("Checking Recycle Bin for files deleted in the last 30 min... ");
         int del = 0;
         try { del = ScanRecycleBin(30); } catch (Exception e) { Console.Write("error: " + e.Message); }
@@ -1396,7 +1380,7 @@ static class HitCheck
         W("  RESULTS");
         W("========================================================");
 
-        // Windows Services section
+        
         W("");
         W("[ WINDOWS SERVICES AUDIT ] (" + ServicesReport.Count + ")");
         foreach (var s in ServicesReport)
@@ -1405,7 +1389,7 @@ static class HitCheck
             W(flag + s.Name.PadRight(12) + " (" + s.DisplayName + "): " + s.Status);
         }
 
-        // Suspicious Files section
+        
         W("");
         W("[ SUSPICIOUS FILES ] (" + Files.Count + ")");
         if (Files.Count == 0) W("  none found");
@@ -1463,15 +1447,15 @@ static class HitCheck
         bool bad = Files.Count > 0 || HighConfidenceSig();
         if (bad)
         {
-            W("  VERDICT: SUSPICIOUS - manual review required.");
+            W("  VERDICT: SUSPICIOUS.");
             W("  Cheat traces and/or suspicious files were detected.");
         }
         else if (cheats.Count > 0 || sites.Count > 0)
-            W("  VERDICT: INCONCLUSIVE - low/medium hits only, review examples.");
+            W("  VERDICT: INCONCLUSIVE - low/medium hits only.");
         else
             W("  VERDICT: CLEAN - no known cheat traces found in scanned memory.");
         W("  Note: a clean result is not proof of innocence (memory can be");
-        W("  wiped, or the cheat was not running). This tool assists, not decides.");
+        W("  wiped, or the cheat was not running).");
         W("========================================================");
 
         try
